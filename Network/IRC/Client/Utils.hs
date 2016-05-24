@@ -40,8 +40,8 @@ delChan tvarI chan = do
   iconf <- readTVar tvarI
   writeTVar tvarI iconf { _channels = filter (/=chan) $ _channels iconf }
 
--- | Add an eventHandler
-addHandler :: EventHandler () -> StatefulIRC () ()
+-- | Add an event handler
+addHandler :: EventHandler s -> StatefulIRC s ()
 addHandler handler = do
   tvarI <- instanceConfigTVar
 
@@ -49,6 +49,14 @@ addHandler handler = do
     iconf <- readTVar tvarI
     writeTVar tvarI iconf { _eventHandlers = handler : _eventHandlers iconf }
 
+-- | Overwrite all event handlers
+setHandlers :: [EventHandler s] -> StatefulIRC s ()
+setHandlers handlers = do
+  tvarI <- instanceConfigTVar
+
+  liftIO . atomically $  do
+    iconf <- readTVar tvarI
+    writeTVar tvarI iconf { _eventHandlers = handlers }
 
 -- | Send a message to the source of an event.
 reply :: UnicodeEvent -> Text -> StatefulIRC s ()
