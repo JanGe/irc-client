@@ -16,8 +16,8 @@ import Control.Monad              (unless)
 import Control.Monad.IO.Class     (MonadIO, liftIO)
 import Control.Monad.Trans.Reader (runReaderT)
 import Data.ByteString            (ByteString)
-import Data.Conduit               (Producer, Conduit, Consumer, (=$=), ($=), (=$), awaitForever, toProducer, yield)
-import Data.Conduit.TMChan        (closeTBMChan, isEmptyTBMChan, newTBMChanIO, sourceTBMChan, writeTBMChan)
+import Data.Conduit               (Producer, Conduit, Consumer, (=$=), ($=), (=$), await, awaitForever, toProducer, yield)
+import Data.Conduit.TMChan        (closeTBMChan, isClosedTBMChan, isEmptyTBMChan, newTBMChanIO, sourceTBMChan, writeTBMChan)
 import Data.Text.Encoding         (decodeUtf8, encodeUtf8)
 import Data.Time.Clock            (NominalDiffTime, getCurrentTime)
 import Data.Time.Format           (formatTime)
@@ -117,12 +117,17 @@ forgetful = awaitForever go where
 -- | Block on receiving a message and invoke all matching handlers
 -- concurrently.
 eventSink :: MonadIO m => IRCState s -> Consumer IrcEvent m ()
-eventSink ircstate = awaitForever $ \event -> do
+eventSink ircstate = await >>= maybe (return ()) (\event -> do
   let event'  = decodeUtf8 <$> event
   ignored <- isIgnored ircstate event'
   unless ignored $ do
     handlers <- getHandlersFor event' . _eventHandlers <$> getInstanceConfig' ircstate
     liftIO $ mapM_ (\h -> forkIO $ runReaderT (h event') ircstate) handlers
+
+  -- If no more events are expected, we can terminate this sink.
+  disconnected <- isDisconnected ircstate
+  unless disconnected $
+    eventSink ircstate)
 
 -- | Check if an event is ignored or not.
 isIgnored :: MonadIO m => IRCState s -> UnicodeEvent -> m Bool
@@ -135,6 +140,12 @@ isIgnored ircstate ev = do
       User      n ->  (n, Nothing) `elem` ignoreList
       Channel c n -> ((n, Nothing) `elem` ignoreList) || ((n, Just c) `elem` ignoreList)
       Server  _   -> False
+
+-- | Check if the connection is already meant to be closed.
+isDisconnected :: MonadIO m => IRCState s -> m Bool
+isDisconnected ircstate = do
+  let queueS  = _sendqueue $ getConnectionConfig ircstate
+  liftIO . atomically $ isClosedTBMChan queueS
 
 -- |Get the event handlers for an event.
 getHandlersFor :: Event a -> [EventHandler s] -> [UnicodeEvent -> StatefulIRC s ()]
